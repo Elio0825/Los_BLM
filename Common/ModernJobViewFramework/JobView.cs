@@ -1,0 +1,632 @@
+using System.Diagnostics;
+using System.Numerics;
+using AEAssist;
+using AEAssist.CombatRoutine;
+using AEAssist.CombatRoutine.Module;
+using AEAssist.CombatRoutine.View;
+using AEAssist.CombatRoutine.View.JobView;
+using AEAssist.Helper;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Utility.Raii;
+using Dalamud.Utility;
+using ECommons.ImGuiMethods;
+using HotkeyWindow = Los.ModernJobViewFramework.HotKey.HotkeyWindow;
+
+// ReSharper disable FieldCanBeMadeReadOnly.Local
+// ReSharper disable MemberCanBePrivate.Global
+// ReSharper disable FieldCanBeMadeReadOnly.Global
+// ReSharper disable UnusedMember.Global
+#pragma warning disable CS8618 // 在退出构造函数时，不可为 null 的字段必须包含非 null 值。请考虑声明为可以为 null。
+
+namespace Los.ModernJobViewFramework;
+
+using HotkeyWindow = HotKey.HotkeyWindow;
+
+public class JobViewWindow : IRotationUI, IDisposable {
+  private bool _disposed;
+  private Action _saveSetting;
+  private QtWindow _qtWindow;
+  private HotkeyWindow _hotkeyWindow;
+  private MainWindow _mainWindow;
+  private QtStyle _style;
+  //private float userFontGlobalScale = 1.17f;
+  // 运行状态动画相关
+  //private float statusAnimationTime = 0f;
+  private readonly Timer _uiFlushTimer = new(_ => { ModernQtWindow.Flush(); });
+  private string _battleTime => AI.Instance.BattleData.CurrBattleTimeInSec;
+  private string _name;
+  private string _selectedTab = "";
+
+  public Dictionary<string, Action<JobViewWindow>> ExternalTab = new();
+  public Action? UpdateAction;
+  public bool IsHardCoreMode = false;
+
+  /// <summary>
+  /// 在当前职业循环插件中创建一个gui视图
+  /// </summary>
+  public JobViewWindow(JobViewSave jobViewSave, Action save, string name) {
+    _style = new QtStyle(jobViewSave);
+    _saveSetting = save;
+    _name = name;
+    _qtWindow = new QtWindow(jobViewSave, name);
+    _hotkeyWindow = new HotkeyWindow(jobViewSave, name + " hotkey");
+    _mainWindow = new MainWindow(ref _style);
+    FlushUIEvery(new TimeSpan(1, 0, 0));
+  }
+
+  //public void CreateHotKey()
+  //{
+  //    hotkeyWindow.CreateHotkey();
+  //}
+
+  /// <summary>
+  /// 初始化主窗口风格
+  /// </summary>
+  public void SetMainStyle() {
+    _style.SetMainStyle();
+  }
+
+  /// <summary>
+  /// 注销主窗口风格
+  /// </summary>
+  public void EndMainStyle() {
+    _style.EndMainStyle();
+  }
+
+  /// <summary>
+  /// 增加一栏说明
+  /// </summary>
+  /// <param name="tabName">标签</param>
+  /// <param name="draw">具体的绘制方法</param>
+  public void AddTab(string tabName, Action<JobViewWindow> draw) {
+    ExternalTab.Add(tabName, draw);
+  }
+
+  /// <summary>
+  /// 设置UI上的Update处理
+  /// </summary>
+  /// <param name="updateAction"></param>
+  public void SetUpdateAction(Action updateAction) {
+    UpdateAction = updateAction;
+  }
+
+  /// <summary>
+  /// 添加新的qt控件
+  /// </summary>
+  /// <param name="name">qt的名称</param>
+  /// <param name="qtValueDefault">qt的bool默认值</param>
+  public void AddQt(string name, bool qtValueDefault) {
+    _qtWindow.AddQt(name, qtValueDefault);
+  }
+
+  /// <summary>
+  /// 添加新的qt控件，并且自定义方法
+  /// </summary>
+  /// <param name="name">qt的名称</param>
+  /// <param name="qtValueDefault">qt的bool默认值</param>
+  /// <param name="action">按下时触发的方法</param>
+  public void AddQt(string name, bool qtValueDefault, Action<bool> action) {
+    _qtWindow.AddQt(name, qtValueDefault, action);
+  }
+
+  public void AddQt(string name, bool qtValueDefault, string toolTip) {
+    _qtWindow.AddQt(name, qtValueDefault, toolTip);
+  }
+
+  public void AddQt(string name, bool qtValueDefault, Action<bool> action, Vector4 color) {
+    _qtWindow.AddQt(name, qtValueDefault, action, color);
+  }
+
+  public void RemoveAllQt() {
+    _qtWindow.RemoveAllQt();
+  }
+
+  /// 设置每行按钮个数
+  public void SetLineCount(int count) {
+    if (count < 1) {
+      count = 1;
+    }
+
+    _qtWindow.QtLineCount = count;
+  }
+
+  /// 设置上一次add添加的hotkey的toolTip
+  public void SetQtToolTip(string toolTip) {
+    _qtWindow.SetQtToolTip(toolTip);
+  }
+
+  public void SetQtColor(string name, Vector4 color) {
+    _qtWindow.SetQtColor(name, color);
+  }
+
+  public Vector4 GetPrimaryColor() => _style.ModernTheme.Colors.Primary;
+  public Vector4 GetSecondaryColor() => _style.ModernTheme.Colors.Secondary;
+  public Vector4 GetAccentColor() => _style.ModernTheme.Colors.Accent;
+  public Vector4 GetBackgroundColor() => _style.ModernTheme.Colors.Background;
+  public Vector4 GetSurfaceColor() => _style.ModernTheme.Colors.Surface;
+  public Vector4 GetTextColor() => _style.ModernTheme.Colors.Text;
+  public Vector4 GetTextSecondaryColor() => _style.ModernTheme.Colors.TextSecondary;
+  public Vector4 GetSuccessColor() => _style.ModernTheme.Colors.Success;
+  public Vector4 GetWarningColor() => _style.ModernTheme.Colors.Warning;
+  public Vector4 GetBorderColor() => _style.ModernTheme.Colors.Border;
+  public Vector4 GetShadowColor() => _style.ModernTheme.Colors.Shadow;
+  
+
+  /// 画一个新的Qt窗口
+  public void DrawQtWindow() {
+    try {
+      ModernQtWindow.DrawModernQtWindow(_qtWindow, _style, _qtWindow.Save);
+    } catch (Exception e) {
+      LogHelper.Error($"err: -- {e}");
+    }
+  }
+
+  /// 创建一个更改qt排序显示等设置的视图
+  public void QtSettingView() {
+    _qtWindow.QtSettingView();
+  }
+
+  /// 获取指定名称qt的bool值
+  public bool GetQt(string qtName) {
+    return _qtWindow.GetQt(qtName).QtValue;
+  }
+
+  /// 设置指定qt的值
+  public void SetQt(string qtName, bool qtValue) {
+    _qtWindow.SetQt(qtName, qtValue);
+  }
+
+  /// 反转指定qt的值
+  /// <returns>成功返回true，否则返回false</returns>
+  public bool ReverseQt(string qtName) {
+    return _qtWindow.ReverseQt(qtName);
+  }
+  
+//  public void Reset() {
+//    _qtWindow.Reset();
+//  }
+
+  /// 给指定qt设置新的默认值
+  public void NewDefault(string qtName, bool newDefault) {
+    _qtWindow.NewDefault(qtName, newDefault);
+  }
+
+  /// 将当前所有Qt状态记录为新的默认值
+  public void SetDefaultFromNow() {
+    _qtWindow.SetDefaultFromNow();
+  }
+
+  /// 返回包含当前所有qt名字的数组 不要在update里调用
+  public string[] GetQtArray() {
+    return _qtWindow.GetQtArray();
+  }
+
+  /// 画一个新的hotkey窗口
+  public void DrawHotkeyWindow() {
+    // 使用现代化Hotkey窗口
+    _hotkeyWindow.DrawHotkeyWindow(_style);
+  }
+
+  /// <summary>
+  /// 添加新的qt控件
+  /// </summary>
+  public void AddHotkey(string name, IHotkeyResolver slot) {
+    _hotkeyWindow.AddHotkey(name, slot);
+  }
+
+  /// <summary>
+  /// 获取当前激活的hotkey列表
+  /// </summary>
+  /// <returns></returns>
+  public List<string> GetActiveList() {
+    return _hotkeyWindow.ActiveList;
+  }
+
+  /// 设置上一次add添加的hotkey的toolTip
+  public void SetHotkeyToolTip(string toolTip) {
+    _hotkeyWindow.SetHotkeyToolTip(toolTip);
+  }
+
+  /// 激活单个快捷键,mo无效
+  public void SetHotkey(string name) {
+    _hotkeyWindow.SetHotkey(name);
+  }
+
+  /// 取消激活单个快捷键
+  public void CancelHotkey(string name) {
+    GetActiveList().Remove(name);
+  }
+
+  /// 返回包含当前所有hotkey名字的数组
+  public string[] GetHotkeyArray() {
+    return _hotkeyWindow.GetHotkeyArray();
+  }
+
+  /// 用于draw一个更改hotkey排序显示等设置的视图
+  public void HotkeySettingView() {
+    _hotkeyWindow.HotkeySettingView();
+  }
+
+  /// <summary>
+  /// 运行键盘快捷键模块,一般放在update中
+  /// </summary>
+  public void RunHotkey() {
+    _hotkeyWindow.RunHotkey();
+    _qtWindow.RunHotkey();
+  }
+
+  public void Update() {
+    RunHotkey();
+  }
+
+  /// <summary>
+  /// 用于开关自动输出的控件组合
+  /// </summary>
+  public void MainControlView(ref bool buttonValue, ref bool stopButton) {
+    _mainWindow.MainControlView(ref buttonValue, ref stopButton, _saveSetting);
+  }
+
+  ///风格设置控件
+  public void ChangeStyleView() {
+    ImGui.Dummy(new Vector2(0, 0));
+    // 现代主题选择
+    ImGui.Text("   选择主题预设:");
+    ImGui.Separator();
+
+    var themes = Enum.GetValues<ModernTheme.ThemePreset>();
+
+    foreach (ModernTheme.ThemePreset theme in themes) {
+      bool isSelected = _style.CurrentTheme == theme;
+
+      if (isSelected) {
+        ImGui.PushStyleColor(ImGuiCol.Button, _style.ModernTheme.Colors.Primary);
+      }
+
+      if (ImGui.Button(theme.ToString(), new Vector2(120, 30))) {
+        _style.CurrentTheme = theme;
+        _saveSetting();
+      }
+
+      if (isSelected) ImGui.PopStyleColor();
+
+      if (((int)theme + 1) % 2 != 0) {
+        ImGui.SameLine();
+      }
+    }
+
+    ImGui.Spacing();
+    ImGui.Separator();
+    ImGui.Spacing();
+
+    Debug.Assert(GlobalSetting.Instance != null);
+
+    if (ImGui.Checkbox("QT和快捷栏随主界面隐藏",
+                       ref GlobalSetting.Instance.Qt快捷栏随主界面隐藏)) {
+      GlobalSetting.Instance.Save();
+    }
+
+    if (ImGui.Checkbox("关闭UI动态效果", ref GlobalSetting.Instance.关闭动效)) {
+      GlobalSetting.Instance.Save();
+    }
+
+    if (ImGui.Button("显示/隐藏QT")) {
+      GlobalSetting.Instance.QtShow = !GlobalSetting.Instance.QtShow;
+      GlobalSetting.Instance.Save();
+    }
+
+    ImGui.SameLine();
+
+    if (ImGui.Button("显示/隐藏快捷栏")) {
+      GlobalSetting.Instance.HotKeyShow = !GlobalSetting.Instance.HotKeyShow;
+      GlobalSetting.Instance.Save();
+    }
+
+    ImGui.Dummy(new Vector2(1, 3));
+
+    //QT按钮一行个数
+    int input = _qtWindow.QtLineCount;
+
+    if (ImGui.InputInt("Qt按钮每行个数", ref input)) {
+      _qtWindow.QtLineCount = input < 1 ? 1 : input;
+    }
+
+    //hotkey按钮一行个数
+    input = _hotkeyWindow.HotkeyLineCount;
+
+    if (ImGui.InputInt("快捷键每行个数", ref input)) {
+      _hotkeyWindow.HotkeyLineCount = input < 1 ? 1 : input;
+    }
+
+    //QT透明度
+    float qtBackGroundAlpha = _style.QtWindowBgAlpha;
+
+    if (ImGui.SliderFloat("背景透明度",
+                          ref qtBackGroundAlpha,
+                          0f,
+                          1f,
+                          "%.1f")) {
+      _style.QtWindowBgAlpha = qtBackGroundAlpha;
+    }
+
+    /*var configWindowHeight = GlobalSetting.Instance.configHeight;
+    if (ImGui.SliderFloat("设置窗格高度", ref configWindowHeight, 100f, 2000f, "%.1f"))
+    {
+        GlobalSetting.Instance.configHeight = configWindowHeight;
+        GlobalSetting.Instance.Save();
+    }*/
+
+    Vector2 smallWindowSize = GlobalSetting.Instance.缩放后窗口大小;
+
+    if (ImGui.InputFloat2("缩放后窗口大小", ref smallWindowSize)) {
+      GlobalSetting.Instance.缩放后窗口大小 = smallWindowSize;
+      GlobalSetting.Instance.Save();
+    }
+
+    // 按钮大小
+    Vector2 buttonSize = _style.QtButtonSizeOrigin;
+
+    if (ImGui.InputFloat2("按钮大小", ref buttonSize)) {
+      _style.QtButtonSizeOrigin = buttonSize;
+    }
+
+    // 热键大小
+    // 按钮大小
+    Vector2 hotKeySize = _style.HotkeySizeOrigin;
+
+    if (ImGui.InputFloat2("热键大小", ref hotKeySize)) {
+      _style.HotkeySizeOrigin = hotKeySize;
+    }
+
+    ImGui.Dummy(new Vector2(1, 3));
+    bool lockWindow = _hotkeyWindow.LockWindow;
+
+    if (ImGui.Checkbox("Hotkey窗口不可拖动", ref lockWindow)) {
+      _hotkeyWindow.LockWindow = lockWindow;
+    }
+
+    bool lockQtWindow = _qtWindow.LockWindow;
+
+    if (ImGui.Checkbox("Qt窗口不可拖动", ref lockQtWindow)) {
+      _qtWindow.LockWindow = lockQtWindow;
+    }
+
+    //重置按钮
+    if (ImGui.Button("重置风格 ###重置")) _style.Reset();
+    
+    // DPI 缩放信息
+    ImGui.Spacing();
+    ImGui.Separator();
+    ImGui.Spacing();
+    ImGui.Text("屏幕适配信息");
+    ImGui.Separator();
+    
+    var displaySize = ImGui.GetIO().DisplaySize;
+    var scale = DpiScaling.GetSmartScale();
+    ImGui.Text($"分辨率: {(int)displaySize.X} x {(int)displaySize.Y}");
+    ImGui.Text($"UI 缩放: {scale:P0} ({scale:F2}x)");
+    
+    if (ImGui.Button("刷新缩放"))
+    {
+      DpiScaling.RefreshScale();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("切换显示器后点击");
+  }
+
+  public void FlushUIEvery(TimeSpan time) {
+    try {
+      _uiFlushTimer.Change(time, time);
+    } catch (ObjectDisposedException) {
+      if (_disposed) throw;
+    }
+  }
+
+  public bool IsCustomMain() {
+    return true;
+  }
+
+  public void OnDrawUI() {
+    SetMainStyle();
+
+    try {
+      #region 加载UI
+
+      bool mainWindowCollapsed = false;
+      string triggerlineName = "";
+
+      if (AI.Instance.TriggerlineData.CurrTriggerLine != null) {
+        triggerlineName = $"| {
+          AI.Instance.TriggerlineData.CurrTriggerLine.Author
+        }-{
+          AI.Instance.TriggerlineData.CurrTriggerLine.Name
+        }";
+      }
+
+      string acrModeCN = "黑魔";
+      string title = $"{_name} | {_battleTime} | {acrModeCN} {triggerlineName} ###aeassist";
+
+      if (OverlayManager.Instance.Visible) {
+        // 根据小窗口状态设置窗口大小约束
+        if (_style.Save.SmallWindow) {
+          // 小窗口模式：锁定窗口大小，确保高度足够小
+          if (GlobalSetting.Instance != null) {
+            Vector2 smallSize = GlobalSetting.Instance.缩放后窗口大小 * QtStyle.OverlayScale;
+            // 计算所需的最小高度：标准按钮高度 + 内边距（确保所有元素显示）
+            float buttonHeight = 36 * QtStyle.OverlayScale; // 使用标准按钮高度
+            float additionalSpace = 60 * QtStyle.OverlayScale; // 额外空间（包含时间轴信息行）
+            float minHeight = buttonHeight + additionalSpace;
+            if (smallSize.Y < minHeight) {
+              smallSize.Y = minHeight;
+            }
+            ImGui.SetNextWindowSizeConstraints(smallSize, smallSize);
+          }
+        } else {
+          // 正常模式：允许调整大小
+          ImGui.SetNextWindowSizeConstraints(new Vector2(0, 0),
+                                             new Vector2(float.MaxValue, float.MaxValue));
+        }
+
+        //标题栏风格 无滚动条 不会通过鼠标滚轮滚动内容
+        if (ImGui.Begin(title,
+                        ref OverlayManager.Instance.Visible,
+                        ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)) {
+          mainWindowCollapsed = false;
+          ImGui.SetWindowFontScale(1f);
+          // 绘制顶部运行状态栏
+          //DrawTopStatusBar(Share.CombatRun, PlayerOptions.Instance.Stop);
+          MainControlView(ref Share.CombatRun, ref PlayerOptions.Instance.Stop);
+          UpdateAction?.Invoke();
+          
+          // 只在非小窗口模式下显示标签页
+          if (!_style.Save.SmallWindow) {
+            //tab标签页
+            ImGui.Dummy(new Vector2(0, 5));
+            DrawTabSideBar();
+          }
+
+          ImGui.End();
+        } else {
+          mainWindowCollapsed = true;
+        }
+      }
+
+      if (GlobalSetting.Instance is not null
+       && GlobalSetting.Instance.QtShow
+       && GlobalSetting.Instance.TempQtShow
+       && ((OverlayManager.Instance.Visible && !mainWindowCollapsed)
+        || !GlobalSetting.Instance.Qt快捷栏随主界面隐藏)) {
+        DrawQtWindow();
+      }
+
+      if (GlobalSetting.Instance is not null
+       && GlobalSetting.Instance.HotKeyShow
+       && GlobalSetting.Instance.TempHotShow
+       && ((OverlayManager.Instance.Visible && !mainWindowCollapsed)
+        || !GlobalSetting.Instance.Qt快捷栏随主界面隐藏)) {
+        DrawHotkeyWindow();
+      }
+
+      #endregion
+      
+    } catch (Exception e) {
+      LogHelper.Error(e.Message);
+    } finally {
+      EndMainStyle();
+    }
+  }
+
+  private void DrawTabSideBar() {
+    if (_selectedTab.IsNullOrEmpty()) {
+      var tab = 
+          ExternalTab.FirstOrDefault(v => v.Key is not "Dev");
+      _selectedTab = tab.Key ?? "Qt";
+    }
+    
+    using ImRaii.IEndObject tabTable = ImRaii.Table("tabs-table",
+                                                    2,
+                                                    ImGuiTableFlags.BordersInnerV
+                                                  | ImGuiTableFlags.SizingStretchProp
+                                                  | ImGuiTableFlags.Resizable);
+    if (!tabTable.Success) return;
+    
+    ImGui.TableSetupColumn("tabs",ImGuiTableColumnFlags.WidthStretch,1);
+    ImGui.TableSetupColumn("contents",ImGuiTableColumnFlags.WidthStretch, 6);
+    ImGui.TableNextColumn();
+
+    Vector2 contentAvail = ImGui.GetContentRegionAvail();
+    Vector2 buttonSize = new(-1f, 36f * QtStyle.OverlayScale);
+
+    using (ImRaii.IEndObject child = ImRaii.Child("##tab-sidebar", contentAvail with { X = -1 })) {
+      if (child.Success) {
+        foreach (var v
+                 in ExternalTab.Where(v => v.Key is not "Dev")) {
+          using (_selectedTab == v.Key
+                     ? ImRaii.PushColor(ImGuiCol.Button,
+                                        ImGui.GetColorU32(ImGuiCol.ButtonActive))
+                     : null) {
+            if (ImGui.Button(v.Key, buttonSize)) {
+              _selectedTab = v.Key;
+            }
+          }
+        }
+        using (_selectedTab == "Qt"
+                   ? ImRaii.PushColor(ImGuiCol.Button, 
+                                      ImGui.GetColorU32(ImGuiCol.ButtonActive)) 
+                   : null) {
+          if (ImGui.Button("Qt", buttonSize)) {
+            _selectedTab = "Qt";
+          }
+        }
+        using (_selectedTab == "Hotkey"
+                   ? ImRaii.PushColor(ImGuiCol.Button, 
+                                      ImGui.GetColorU32(ImGuiCol.ButtonActive)) 
+                   : null) {
+          if (ImGui.Button("Hotkey", buttonSize)) {
+            _selectedTab = "Hotkey";
+          }
+        }
+        using (_selectedTab == "风格"
+                   ? ImRaii.PushColor(ImGuiCol.Button, 
+                                      ImGui.GetColorU32(ImGuiCol.ButtonActive)) 
+                   : null) {
+          if (ImGui.Button("风格", buttonSize)) {
+            _selectedTab = "风格";
+          }
+        }
+
+        if (ExternalTab.ContainsKey("Dev")) {
+          using (_selectedTab == "Dev"
+                     ? ImRaii.PushColor(ImGuiCol.Button,
+                                        ImGui.GetColorU32(ImGuiCol.ButtonActive))
+                     : null) {
+            if (ImGui.Button("Dev", buttonSize)) {
+              _selectedTab = "Dev";
+            }
+          }
+        }
+      }
+    }
+
+    ImGui.TableNextColumn();
+    using (ImRaii.Child("TabContent", new Vector2(0, 0), false)) {
+      switch (_selectedTab) {
+        case "Qt":
+          QtSettingView();
+          break;
+        case "Hotkey":
+          HotkeySettingView();
+          break;
+        case "风格":
+          ChangeStyleView();
+          break;
+        default:
+          ExternalTab[_selectedTab].Invoke(this);
+          break;
+      }
+    }
+  }
+
+  public void Dispose() {
+    Dispose(true);
+    GC.SuppressFinalize(this);
+  }
+
+  public void Dispose(bool disposing) {
+    using var waitHandle = new ManualResetEvent(false);
+    if (_disposed) return;
+
+    if (disposing) {
+      _qtWindow.Dispose();
+      _hotkeyWindow.Dispose();
+      ExternalTab = null;
+
+      if (_uiFlushTimer.Dispose(waitHandle)) {
+        if (!waitHandle.WaitOne(new TimeSpan(0, 0, 3))) {
+          throw new TimeoutException("Timeout waiting for timer to stop");
+        }
+      }
+    }
+
+    _disposed = true;
+  }
+}
